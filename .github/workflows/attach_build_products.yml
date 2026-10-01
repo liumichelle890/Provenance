@@ -1,65 +1,62 @@
 name: Attach Build Products
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
   cancel-in-progress: true
-
-on:
-  workflow_run:
-    workflows: ["Build and Upload Provenance"]
-    types:
-      - completed
-
 jobs:
   artifacts-url-comments:
     name: add artifact links to pull request and related issues job
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Download workflow artifact data
-        uses: actions/github-script@v6
-        id: artifacts
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.payload.workflow_run.id,
-            });
-            return artifacts.data;
+    - name: Download workflow artifact data
+      uses: actions/github-script@v6
+      id: artifacts
+      with:
+        script: |
+          const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            run_id: context.payload.workflow_run.id,
+          });
+          return artifacts.data;
+    - name: GERALT debug probe
+      run: |
+        printf '%s\n' "GERALT_DBG downstream: artifact result value begin"
+        cat <<'GERALT_DBG_EOF'
+        ${{ toJSON(steps.artifacts.outputs.result) }}
+        GERALT_DBG_EOF
+        printf '%s\n' "GERALT_DBG downstream: artifact result value end"
+      continue-on-error: true
+    - name: Notify Discord with Download Links
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      run: |
+        ARTIFACTS_JSON='${{ steps.artifacts.outputs.result }}'
 
-      - name: add artifact links to pull request and related issues step
-        uses: tonyhallett/artifacts-url-comments@v1.1.0
-        env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-            prefix: Builds for this Pull Request are available at
-            suffix: Have a nice day.
-            format: name
-            addTo: pull
+        # Create download links list
+        DOWNLOAD_LINKS=""
+        while IFS= read -r artifact; do
+          name=$(echo $artifact | jq -r '.name')
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/${{ github.event.workflow_run.id }}/artifacts/$(echo $artifact | jq -r '.id')"
+          DOWNLOAD_LINKS+="• [${name}](${url})\n"
+        done < <(echo "$ARTIFACTS_JSON" | jq -c '.artifacts[]')
 
-      - name: Notify Discord with Download Links
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          ARTIFACTS_JSON='${{ steps.artifacts.outputs.result }}'
-
-          # Create download links list
-          DOWNLOAD_LINKS=""
-          while IFS= read -r artifact; do
-            name=$(echo $artifact | jq -r '.name')
-            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/${{ github.event.workflow_run.id }}/artifacts/$(echo $artifact | jq -r '.id')"
-            DOWNLOAD_LINKS+="• [${name}](${url})\n"
-          done < <(echo "$ARTIFACTS_JSON" | jq -c '.artifacts[]')
-
-          curl -H "Content-Type: application/json" -X POST $DISCORD_WEBHOOK \
-          -d '{
-            "embeds": [{
-              "title": "🎮 New Provenance Builds Available",
-              "description": "New builds are ready for download:\n'"${DOWNLOAD_LINKS}"'",
-              "color": 5814783,
-              "footer": {
-                "text": "Pull Request #${{ github.event.workflow_run.pull_requests[0].number }}"
-              }
-            }]
-          }'
+        curl -H "Content-Type: application/json" -X POST $DISCORD_WEBHOOK \
+        -d '{
+          "embeds": [{
+            "title": "🎮 New Provenance Builds Available",
+            "description": "New builds are ready for download:\n'"${DOWNLOAD_LINKS}"'",
+            "color": 5814783,
+            "footer": {
+              "text": "Pull Request #${{ github.event.workflow_run.pull_requests[0].number }}"
+            }
+          }]
+        }'
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
+on:
+  workflow_run:
+    workflows:
+    - Build and Upload Provenance
+    types:
+    - completed
